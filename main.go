@@ -118,6 +118,8 @@ type Attachment struct {
 	Data io.Reader
 }
 
+// SendMailArgFunc is an argumentless function that returns all the arguments
+// used in smtp.SendMail
 type SendMailArgFunc func() (
 	addr string,
 	auth smtp.Auth,
@@ -126,6 +128,10 @@ type SendMailArgFunc func() (
 	msg []byte,
 )
 
+// SendMailArgs returns a SendMailArgFunc that is guaranteed to cleanly return
+// all the arguments necessary to send a mail using smtp.SendMail. If for some
+// reason an error occurs when generating those arguments, that error is passed
+// out alongisde the SendMailArgFunc so that it can avoid being invoked.
 func (m *Message) SendMailArgs(
 	addr string, auth smtp.Auth) (SendMailArgFunc, error) {
 
