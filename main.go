@@ -9,8 +9,10 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/mail"
+	"net/smtp"
 	"net/textproto"
 	"path/filepath"
+	"strings"
 )
 
 // Message Lint: http://tools.ietf.org/tools/msglint/
@@ -26,14 +28,12 @@ type Message struct {
 	// TODO(JPOEHLS): Add support for specifying the Sender header.
 
 	// Technically this could be a list of addresses but we don't support that. See RFC 2822 s3.6.2.
-	From string
+	From mail.Address
 
 	// Technically this could be a list of addresses but we don't support that. See RFC 2822 s3.6.2.
-	ReplyTo string // optional
+	ReplyTo mail.Address // optional
 
-	// TODO(JPOEHLS): Make these slices of mail.Address and add AddTo, AddCc, AddBcc funcs that take strings. (Inspired by gopostal's API, https://github.com/pcrawfor/gopostal)
-	// At least one of these slices must have a non-zero length.
-	To, Cc, Bcc []string
+	To, Cc, Bcc []mail.Address
 
 	Subject string // optional
 
@@ -44,6 +44,65 @@ type Message struct {
 
 	// Extra mail headers.
 	Headers mail.Header
+}
+
+// appendMailAddresses parses any number of addresses and appends them to a
+// destination slice. If any of the addresses fail to parse, none of them are
+// appended.
+func appendMailAddresses(dest *[]mail.Address, addresses ...string) error {
+	var parsedAddresses []mail.Address
+	var err error
+
+	for _, address := range addresses {
+		parsed, err := mail.ParseAddress(address)
+		if err != nil {
+			return err
+		}
+		parsedAddresses = append(parsedAddresses, *parsed)
+	}
+
+	*dest = append(*dest, parsedAddresses...)
+	return err
+}
+
+// setMailAddress parses an address and sets it to a destination mail address.
+func setMailAddress(dest *mail.Address, address string) error {
+	parsed, err := mail.ParseAddress(address)
+	if err != nil {
+		return err
+	}
+	*dest = *parsed
+	return nil
+}
+
+// SetFrom creates a mail.Address and assigns it to the message's From
+// field.
+func (m *Message) SetFrom(address string) error {
+	return setMailAddress(&m.From, address)
+}
+
+// SetReplyTo creates a mail.Address and assigns it to the message's ReplyTo
+// field.
+func (m *Message) SetReplyTo(address string) error {
+	return setMailAddress(&m.ReplyTo, address)
+}
+
+// AddTo creates a mail.Address and adds it to the list of To addresses in the
+// message
+func (m *Message) AddTo(addresses ...string) error {
+	return appendMailAddresses(&m.To, addresses...)
+}
+
+// AddCc creates a mail.Address and adds it to the list of Cc addresses in the
+// message
+func (m *Message) AddCc(addresses ...string) error {
+	return appendMailAddresses(&m.Cc, addresses...)
+}
+
+// AddBcc creates a mail.Address and adds it to the list of Bcc addresses in the
+// message
+func (m *Message) AddBcc(addresses ...string) error {
+	return appendMailAddresses(&m.Bcc, addresses...)
 }
 
 // An Attachment represents an email attachment.
@@ -59,6 +118,46 @@ type Attachment struct {
 	Data io.Reader
 }
 
+// SendMailArgFunc is an argumentless function that returns all the arguments
+// used in smtp.SendMail
+type SendMailArgFunc func() (
+	addr string,
+	auth smtp.Auth,
+	from string,
+	to []string,
+	msg []byte,
+)
+
+// SendMailArgs returns a SendMailArgFunc that is guaranteed to cleanly return
+// all the arguments necessary to send a mail using smtp.SendMail. If for some
+// reason an error occurs when generating those arguments, that error is passed
+// out alongisde the SendMailArgFunc so that it can avoid being invoked.
+func (m *Message) SendMailArgs(
+	addr string, auth smtp.Auth) (SendMailArgFunc, error) {
+
+	msgBytes, err := m.Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	return func() (string, smtp.Auth, string, []string, []byte) {
+		var to []string
+		for _, address := range m.To {
+			to = append(to, address.Address)
+		}
+
+		for _, address := range m.Cc {
+			to = append(to, address.Address)
+		}
+
+		for _, address := range m.Bcc {
+			to = append(to, address.Address)
+		}
+
+		return addr, auth, m.From.Address, to, msgBytes
+	}, err
+}
+
 // Bytes gets the encoded MIME message.
 func (m *Message) Bytes() ([]byte, error) {
 	var buffer = &bytes.Buffer{}
@@ -70,18 +169,9 @@ func (m *Message) Bytes() ([]byte, error) {
 	// Require To, Cc, or Bcc
 	// We'll parse the slices into a list of addresses
 	// and then make sure that list isn't empty.
-	toAddrs, err := getAddressListString(m.To)
-	if err != nil {
-		return nil, err
-	}
-	ccAddrs, err := getAddressListString(m.Cc)
-	if err != nil {
-		return nil, err
-	}
-	bccAddrs, err := getAddressListString(m.Bcc)
-	if err != nil {
-		return nil, err
-	}
+	toAddrs := getAddressListString(m.To)
+	ccAddrs := getAddressListString(m.Cc)
+	bccAddrs := getAddressListString(m.Bcc)
 
 	var hasTo = toAddrs != ""
 	var hasCc = ccAddrs != ""
@@ -89,38 +179,28 @@ func (m *Message) Bytes() ([]byte, error) {
 
 	if !hasTo && !hasCc && !hasBcc {
 		return nil, ErrMissingRecipient
-	} else {
-		if hasTo {
-			header.Add("To", toAddrs)
-		}
-		if hasCc {
-			header.Add("Cc", ccAddrs)
-		}
-		// BCC header is excluded on purpose.
-		// BCC recipients aren't included in the message
-		// headers and are only used at the SMTP level.
 	}
 
+	if hasTo {
+		header.Add("To", toAddrs)
+	}
+	if hasCc {
+		header.Add("Cc", ccAddrs)
+	}
+	// BCC header is excluded on purpose.
+	// BCC recipients aren't included in the message
+	// headers and are only used at the SMTP level.
+
+	var emptyAddress mail.Address
 	// Require From address
-	if m.From == "" {
+	if m.From == emptyAddress {
 		return nil, ErrMissingFromAddress
-	} else {
-		parsedAddy, err := mail.ParseAddress(m.From)
-		if err != nil {
-			return nil, err
-		}
-
-		header.Add("From", parsedAddy.String())
 	}
+	header.Add("From", m.From.String())
 
 	// Optional ReplyTo
-	if m.ReplyTo != "" {
-		parsedAddy, err := mail.ParseAddress(m.ReplyTo)
-		if err != nil {
-			return nil, err
-		}
-
-		header.Add("Reply-To", parsedAddy.String())
+	if m.ReplyTo != emptyAddress {
+		header.Add("Reply-To", m.ReplyTo.String())
 	}
 
 	// Optional Subject
@@ -340,43 +420,11 @@ func qEncodeAndWrap(input string, padding int) string {
 // a string value suitable for a MIME header. Each address is
 // Q encoded and wrapped onto its own line to help ensure that
 // the header line doesn't cross the 78 character maximum.
-func getAddressListString(addresses []string) (string, error) {
-	// Short circuit for empty or nil slices.
-	if addresses == nil || len(addresses) == 0 {
-		return "", nil
+func getAddressListString(addresses []mail.Address) string {
+	var addressStrings []string
+
+	for _, address := range addresses {
+		addressStrings = append(addressStrings, address.String())
 	}
-
-	buffer := bytes.NewBuffer([]byte{})
-
-	for i, v := range addresses {
-		// Ignore empty addresses
-		if v != "" {
-			parsedAddy, err := mail.ParseAddress(v)
-			if err != nil {
-				return "", err
-			}
-
-			_, err = fmt.Fprint(buffer, parsedAddy.String())
-			if err != nil {
-				return "", err
-			}
-
-			// TODO(ANYONE): Currently we are splitting each address onto its own line
-			//               because this is the easiest way to ensure lines don't exceed
-			//               the max length. Ideally we wouldn't split until we actually
-			//               needed to.
-
-			// Separate multiple addresses with a comma
-			// and wrap them to their own line using whitespace folding.
-			// See RFC 2822 s2.2.3.
-			if i < len(addresses)-1 {
-				_, err := fmt.Fprint(buffer, ","+crlf+" ")
-				if err != nil {
-					return "", err
-				}
-			}
-		}
-	}
-
-	return buffer.String(), nil
+	return strings.Join(addressStrings, ","+crlf+" ")
 }
