@@ -9,6 +9,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/mail"
+	"net/smtp"
 	"net/textproto"
 	"path/filepath"
 	"strings"
@@ -115,6 +116,40 @@ type Attachment struct {
 	ContentType string
 
 	Data io.Reader
+}
+
+type SendMailArgFunc func() (
+	addr string,
+	auth smtp.Auth,
+	from string,
+	to []string,
+	msg []byte,
+)
+
+func (m *Message) SendMailArgs(
+	addr string, auth smtp.Auth) (SendMailArgFunc, error) {
+
+	msgBytes, err := m.Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	return func() (string, smtp.Auth, string, []string, []byte) {
+		var to []string
+		for _, address := range m.To {
+			to = append(to, address.Address)
+		}
+
+		for _, address := range m.Cc {
+			to = append(to, address.Address)
+		}
+
+		for _, address := range m.Bcc {
+			to = append(to, address.Address)
+		}
+
+		return addr, auth, m.From.Address, to, msgBytes
+	}, err
 }
 
 // Bytes gets the encoded MIME message.
