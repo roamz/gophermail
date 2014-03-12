@@ -1,10 +1,10 @@
 package gophermail
 
 import (
+	"crypto/tls"
+	"net"
 	"net/mail"
 	"net/smtp"
-	"net"
-	"crypto/tls"
 )
 
 // SendMail connects to the server at addr, switches to TLS if possible,
@@ -24,12 +24,12 @@ func SendMail(addr string, a smtp.Auth, msg *Message) error {
 	}
 
 	host, _, err := net.SplitHostPort(addr)
-	      if err != nil {
-	          panic(err)
-	}	
+	if err != nil {
+		panic(err)
+	}
 	config := &tls.Config{
-	       InsecureSkipVerify: true,
-	       ServerName:         host,
+		InsecureSkipVerify: true,
+		ServerName:         host,
 	}
 
 	if ok, _ := c.Extension("STARTTLS"); ok {
