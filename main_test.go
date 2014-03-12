@@ -2,6 +2,7 @@ package gophermail
 
 import (
 	"bytes"
+	"fmt"
 	"net/mail"
 	"testing"
 	"time"
@@ -16,6 +17,9 @@ func Test_Bytes(t *testing.T) {
 	m.HTMLBody = *bytes.NewBufferString("<p>My <b>HTML</b> Body</p>")
 	m.Headers = mail.Header{}
 	m.Headers["Date"] = []string{time.Now().UTC().Format(time.RFC822)}
+
+	// Alternate way of setting text on Body/HTMLBody
+	fmt.Fprintf(&m.Body, "!")
 
 	bytes, err := m.Bytes()
 	if err != nil {
