@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/sloonz/go-qprintable"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -12,6 +11,8 @@ import (
 	"net/textproto"
 	"path/filepath"
 	"strings"
+
+	"github.com/sloonz/go-qprintable"
 )
 
 // Message Lint: http://tools.ietf.org/tools/msglint/
@@ -339,9 +340,9 @@ func writeHeader(w io.Writer, header textproto.MIMEHeader) error {
 // Inspired by https://gist.github.com/andelf/5004821
 func qEncode(input string) string {
 	// use mail's rfc2047 to encode any string
-	addr := mail.Address{input, ""}
+	addr := mail.Address{input + string(0), ""}
 	s := addr.String()
-	return s[:len(s)-3]
+	return s[:len(s)-8] + "?="
 }
 
 // qEncodeAndWrap encodes the input as potentially multiple 'encoded-words'
